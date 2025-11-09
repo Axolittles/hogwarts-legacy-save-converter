@@ -9,6 +9,9 @@ Based on [hogwarts-legacy-save-convertor](https://github.com/NativeSmell/hogwart
   - Download [the latest release](https://github.com/Axolittles/hogwarts-legacy-save-converter/releases/download/release/hogwarts-legacy-save-converter.exe), then run it.
     - If Windows SmartScreen blocks you from starting it, Right Click the EXE, go to Properties, then near the bottom check the box labeled "Unblock" and click Apply, then try to run it again.
     - If you run into an error about missing frameworks, make sure to download the .NET 9 Runtime linked above.
+  - Follow the prompts to migrate your save to the correct Steam user. If you cancel the migration the target and working folders will be opened automatically instead.
+  - After the migration, the working folder is only cleaned up if you have performed an auto-migration. If you have performed a manual migration, delete the working folder.
+  - NOTE: This is based on the Save Converter by NativeSmell. **I'm unable to test further as I no longer have GamePass**, so I'm not sure what happens in certain cases such as if there are multiple GamePass/Xbox users with saves. This has only been tested with a single Xbox GamePass user.
       
 ## Requirements:
   - Windows (Tested on Windows 10 LTSC)
