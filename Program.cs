@@ -17,8 +17,8 @@ internal static class Program
         "HL-00-10.sav"
     };
 
-    private const string OutputDir = "hogwarts-legacy-save-converter-output";
-    private static string GetOutputPath() => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, OutputDir));
+    private const string WorkingDir = "hogwarts-legacy-save-converter-output";
+    private static string GetWorkingDir() => Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, WorkingDir));
 
     private static int Main(string[] args)
     {
@@ -27,7 +27,7 @@ internal static class Program
         Console.WriteLine("https://github.com/Axolittles/hogwarts-legacy-save-converter");
         Console.WriteLine("Based on https://github.com/NativeSmell/hogwarts-legacy-save-convertor/\n");
 
-        var working = GetOutputPath();
+        var working = GetWorkingDir();
         // Delete working folder if it exists
         if (Directory.Exists(working))
         {
@@ -53,7 +53,7 @@ internal static class Program
 
         // Find paths
         var baseAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var defaultSavePath = Path.Combine(
+        var defaultWgsRoot = Path.Combine(
             baseAppData,
             "Packages",
             // ReSharper disable StringLiteralTypo
@@ -62,7 +62,25 @@ internal static class Program
             "SystemAppData",
             "wgs"
         );
-        var path = Directory.Exists(defaultSavePath) ? defaultSavePath : ParsePathArg(args) ?? string.Empty;
+
+        var cliPath = ParsePathArg(args);
+        string? path = null;
+
+        if (!string.IsNullOrWhiteSpace(cliPath) && Directory.Exists(cliPath))
+        {
+            path = ResolveSaveDir(cliPath);
+            if (path == null)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"Path provided with -p does not contain save files: {cliPath}");
+            }
+        }
+
+        if (path == null && Directory.Exists(defaultWgsRoot))
+        {
+            path = SelectWgsUserDirectory(defaultWgsRoot);
+        }
+
         if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
         {
             Console.ForegroundColor = ConsoleColor.White;
@@ -78,7 +96,7 @@ internal static class Program
         {
             // Convert saves
             Console.ForegroundColor = ConsoleColor.DarkGray;
-            ConvertSaves(path, NeedToSave);
+            ConvertSaves(path, NeedToSave, working);
             Console.ForegroundColor = ConsoleColor.Green;
             Console.WriteLine("\nConversion complete!");
 
@@ -90,7 +108,7 @@ internal static class Program
                 {
                     Console.ForegroundColor = ConsoleColor.White;
                     Console.WriteLine("Cancelled. Opening folders instead.\n");
-                    OpenPostConversionFolders(baseAppData);
+                    OpenPostConversionFolders(baseAppData, working);
                     Pause();
                     return 0;
                 }
@@ -108,14 +126,13 @@ internal static class Program
                 {
                     try
                     {
-                        var src = Path.Combine(Directory.GetCurrentDirectory(), OutputDir);
-                        var copied = CopyOutputToSteam(src, steamUserDir, overwrite: true);
+                        var copied = CopyOutputToSteam(working, steamUserDir, overwrite: true);
                         Console.ForegroundColor = ConsoleColor.Green;
                         Console.WriteLine("\nMigration complete.");
                         Console.ForegroundColor = ConsoleColor.White;
                         Console.WriteLine($"{copied} file(s) copied to: {steamUserDir}");
                         // Clean up the temporary output folder after successful auto migration
-                        DeleteDirectory(src);
+                        DeleteDirectory(working);
                     }
                     catch (Exception ex)
                     {
@@ -123,19 +140,19 @@ internal static class Program
                         Console.WriteLine($"Migration failed: {ex.Message}");
                         Console.ForegroundColor = ConsoleColor.White;
                         Console.WriteLine("Opening folders for manual copy...");
-                        OpenPostConversionFolders(baseAppData);
+                        OpenPostConversionFolders(baseAppData, working);
                     }
                 }
                 else
                 {
                     Console.ForegroundColor = ConsoleColor.White;
                     Console.WriteLine("Migration aborted by user. Opening folders for manual copy...");
-                    OpenPostConversionFolders(baseAppData);
+                    OpenPostConversionFolders(baseAppData, working);
                 }
             }
             else
             {
-                OpenPostConversionFolders(baseAppData);
+                OpenPostConversionFolders(baseAppData, working);
             }
 
             Pause();
@@ -149,6 +166,7 @@ internal static class Program
             return 2;
         }
     }
+
     private static string? ParsePathArg(string[] args)
     {
         // Supports: -p <path>, --path <path>, -p=<path>, --path=<path>
@@ -172,10 +190,129 @@ internal static class Program
         return null;
     }
 
-    // ---------- Helpers: UX / Prompts / Opening  ----------
-    private static void OpenPostConversionFolders(string baseAppData)
+    private static string? SelectWgsUserDirectory(string wgsRoot)
     {
-        TryOpenFolder(Path.Combine(Directory.GetCurrentDirectory(), OutputDir), "Converted output folder");
+        if (!Directory.Exists(wgsRoot))
+            return null;
+
+        var candidates = EnumerateWgsUserFolders(wgsRoot).ToList();
+
+        switch (candidates.Count)
+        {
+            case 0:
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"No user save folders found under: {wgsRoot}");
+                return null;
+
+            case 1:
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine($"Found single WGS user folder: {candidates[0].Name}");
+                return candidates[0].FullName;
+
+            default:
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine("\nFound Game Pass (WGS) user save folders:\n");
+                for (var i = 0; i < candidates.Count; i++)
+                    Console.WriteLine($"  {i + 1}.  {candidates[i].Name}");
+
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Write("\nPlease select an input save folder: [1, 2, .. / C to cancel] ");
+                Console.ForegroundColor = ConsoleColor.White;
+
+                while (true)
+                {
+                    var input = Console.ReadLine()?.Trim();
+                    if (string.IsNullOrEmpty(input))
+                    {
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.Write("Enter a number or C: ");
+                        Console.ForegroundColor = ConsoleColor.White;
+                        continue;
+                    }
+
+                    if (input.Equals("C", StringComparison.OrdinalIgnoreCase))
+                        return null;
+
+                    if (int.TryParse(input, out var idx) && idx >= 1 && idx <= candidates.Count)
+                        return candidates[idx - 1].FullName;
+
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("Invalid selection. Enter a valid number or C to cancel: ");
+                    Console.ForegroundColor = ConsoleColor.White;
+                }
+        }
+    }
+
+    private static IEnumerable<DirectoryInfo> EnumerateWgsUserFolders(string wgsRoot)
+    {
+        foreach (var d in Directory.EnumerateDirectories(wgsRoot))
+        {
+            var di = new DirectoryInfo(d);
+            var name = di.Name;
+            if (string.Equals(name, "t", StringComparison.OrdinalIgnoreCase))
+                continue;
+            var hasContent = false;
+            try
+            {
+                hasContent = Directory.EnumerateFileSystemEntries(di.FullName).Any();
+            }
+            catch { /* ignore IO errors */ }
+
+            if (hasContent)
+                yield return di;
+        }
+    }
+
+    private static string? ResolveSaveDir(string inputPath)
+    {
+        // If the folder itself contains save-looking files, use it directly.
+        try
+        {
+            if (Directory.EnumerateFiles(inputPath, "containers.index", SearchOption.TopDirectoryOnly).Any())
+                return inputPath;
+        }
+        catch { /* ignore */ }
+
+        // Otherwise, see if it looks like a WGS root with subfolders / choose one.
+        try
+        {
+            var subs = EnumerateWgsUserFolders(inputPath).ToList();
+            if (subs.Count == 1) return subs[0].FullName;
+            if (subs.Count > 1)
+            {
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine($"\nMultiple candidate folders inside: {inputPath}\n");
+                for (var i = 0; i < subs.Count; i++)
+                    Console.WriteLine($"  {i + 1}.  {subs[i].Name}");
+
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Write("\nSelect one to use: [1, 2, .. / C to cancel] ");
+                Console.ForegroundColor = ConsoleColor.White;
+
+                while (true)
+                {
+                    var choice = Console.ReadLine()?.Trim();
+                    if (string.Equals(choice, "C", StringComparison.OrdinalIgnoreCase))
+                        return null;
+                    if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= subs.Count)
+                        return subs[idx - 1].FullName;
+
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("Invalid selection. Enter a valid number or C: ");
+                    Console.ForegroundColor = ConsoleColor.White;
+                }
+            }
+        }
+        catch { /* ignore */ }
+
+        // Fallback: if no files and no subfolders, reject
+        return null;
+    }
+
+    // ---------- Helpers: UX / Prompts / Opening  ----------
+    private static void OpenPostConversionFolders(string baseAppData, string workingPath)
+    {
+        TryOpenFolder(workingPath, "Converted output folder");
         OpenHogwartsSavesSmart(baseAppData);
     }
 
@@ -293,7 +430,7 @@ internal static class Program
         Console.ReadLine();
     }
 
-    private static void ConvertSaves(string saveDir, HashSet<string> needToSave)
+    private static void ConvertSaves(string saveDir, HashSet<string> needToSave, string outputDir)
     {
         var files = EnumerateAllFiles(saveDir).ToList();
         var savedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -314,12 +451,12 @@ internal static class Program
             if (type is null)
                 continue;
 
-            var outPath = Path.Combine(OutputDir, type);
+            var outPath = Path.Combine(outputDir, type);
             try
             {
                 File.WriteAllBytes(outPath, bytes);
                 Console.ForegroundColor = ConsoleColor.DarkGray;
-                Console.WriteLine($"Writing file: {outPath}");
+                Console.WriteLine($"Writing file: {Path.GetFileName(Path.GetDirectoryName(outPath))}/{Path.GetFileName(outPath)}");
                 savedFiles.Add(type);
             }
             catch (Exception ex)
@@ -449,6 +586,7 @@ internal static class Program
             Console.WriteLine($"Could not open {label}: {ex.Message}");
         }
     }
+
     private static void DeleteDirectory(string dir)
     {
         try
