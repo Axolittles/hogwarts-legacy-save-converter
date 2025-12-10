@@ -269,7 +269,7 @@ internal static class Program
         Console.ForegroundColor = ConsoleColor.White;
         Console.WriteLine("Select conversion direction:\n");
         Console.WriteLine("  1. GamePass (WGS) → Steam");
-        Console.WriteLine("  2. Steam → GamePass (WGS) [manual WGS writeback]\n");
+        Console.WriteLine("  2. Steam → GamePass (WGS)\n");
         Console.ForegroundColor = ConsoleColor.Yellow;
         Console.Write("Enter 1 or 2: ");
         Console.ForegroundColor = ConsoleColor.White;
