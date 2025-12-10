@@ -7,6 +7,12 @@ using System.Text.RegularExpressions;
 
 internal static class Program
 {
+    private enum Direction
+    {
+        GpToSteam,
+        SteamToGp
+    }
+
     // Matches "HL-00-00", "HL-00-10", etc.
     private static readonly Regex Pattern = new(@"HL-\d{2}-\d{2}", RegexOptions.Compiled);
     private static readonly HashSet<string> NeedToSave = new(StringComparer.OrdinalIgnoreCase)
@@ -27,29 +33,7 @@ internal static class Program
         Console.WriteLine("https://github.com/Axolittles/hogwarts-legacy-save-converter");
         Console.WriteLine("Based on https://github.com/NativeSmell/hogwarts-legacy-save-convertor/\n");
 
-        var working = GetWorkingDir();
-        // Delete working folder if it exists
-        if (Directory.Exists(working))
-        {
-            Console.ForegroundColor = ConsoleColor.Red;
-            Console.Write("WARNING: ");
-            Console.ForegroundColor = ConsoleColor.White;
-            Console.WriteLine($"Working folder {working} is not empty. It will be erased!");
-
-            // Allow user to abort
-            if (!PromptYesNo("Continue? [Y/N] "))
-            {
-                Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine("Cancelled by user.");
-                Pause();
-                return 0;
-            }
-
-            DeleteDirectory(working);
-        }
-
-        // Create working folder
-        Directory.CreateDirectory(working);
+        var direction = ParseDirectionArg(args) ?? PromptDirection();
 
         // Find paths
         var baseAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -58,7 +42,7 @@ internal static class Program
             "Packages",
             // ReSharper disable StringLiteralTypo
             "WarnerBros.Interactive.PHX_ktmk1xygcecda",
-            // ReSharper enable StringLiteralTypo
+            // ReSharper restore StringLiteralTypo
             "SystemAppData",
             "wgs"
         );
@@ -66,26 +50,30 @@ internal static class Program
         var cliPath = ParsePathArg(args);
         string? path = null;
 
+        // Resolve source path based on selected direction
         if (!string.IsNullOrWhiteSpace(cliPath) && Directory.Exists(cliPath))
         {
-            path = ResolveSaveDir(cliPath);
+            path = direction == Direction.GpToSteam
+                ? ResolveWgsSaveDir(cliPath)        // GamePass source discovery
+                : ResolveSteamSaveDir(cliPath);     // Steam source discovery
+
             if (path == null)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"Path provided with -p does not contain save files: {cliPath}");
+                Console.WriteLine($"Path provided with -p does not contain {(direction == Direction.GpToSteam ? "GamePass (WGS)" : "Steam")} save files: {cliPath}");
             }
         }
 
-        if (path == null && Directory.Exists(defaultWgsRoot))
+        if (path == null)
         {
-            path = SelectWgsUserDirectory(defaultWgsRoot);
+            path = direction == Direction.SteamToGp ? SelectSteamSourceDirectory(baseAppData) : SelectWgsUserDirectory(defaultWgsRoot);
         }
 
         if (string.IsNullOrWhiteSpace(path) || !Directory.Exists(path))
         {
             Console.ForegroundColor = ConsoleColor.White;
             Console.WriteLine("Could not find Hogwarts Legacy save folder automatically.\n" +
-                              "Usage: convert -p <PATH_TO_SAVE_FOLDER>");
+                              "Usage: convert [-d gp2steam|steam2gp] -p <PATH_TO_SAVE_FOLDER>");
             return 1;
         }
 
@@ -94,65 +82,137 @@ internal static class Program
         Console.WriteLine($"Checking path: {path}");
         try
         {
-            // Convert saves
-            Console.ForegroundColor = ConsoleColor.DarkGray;
-            ConvertSaves(path, NeedToSave, working);
-            Console.ForegroundColor = ConsoleColor.Green;
-            Console.WriteLine("\nConversion complete!");
-
-            // Ask whether to migrate automatically
-            if (PromptYesNo("\nPerform Automatic Migration to Steam? [Y/N] "))
+            if (direction == Direction.GpToSteam)
             {
-                var steamUserDir = SelectSteamUserDirectory(baseAppData);
-                if (steamUserDir is null)
+                var working = GetWorkingDir();
+                // Delete working folder if it exists
+                if (Directory.Exists(working))
                 {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("WARNING: ");
                     Console.ForegroundColor = ConsoleColor.White;
-                    Console.WriteLine("Cancelled. Opening folders instead.\n");
-                    OpenPostConversionFolders(baseAppData, working);
-                    Pause();
-                    return 0;
+                    Console.WriteLine($"Working folder {working} is not empty. It will be erased!");
+
+                    // Allow user to abort
+                    if (!PromptYesNo("Continue? [Y/N] "))
+                    {
+                        Console.ForegroundColor = ConsoleColor.White;
+                        Console.WriteLine("Cancelled by user.");
+                        Pause();
+                        return 0;
+                    }
+
+                    DeleteDirectory(working);
                 }
 
-                var steamId = new DirectoryInfo(steamUserDir).Name;
+                // Create working folder
+                Directory.CreateDirectory(working);
+                // Convert saves
+                Console.ForegroundColor = ConsoleColor.DarkGray;
+                ConvertSaves(path, NeedToSave, working);
+                Console.ForegroundColor = ConsoleColor.Green;
+                Console.WriteLine("\nConversion complete!");
 
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.Write("\nWARNING: ");
-                Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine($"About to migrate Hogwarts Legacy Save Files from GamePass to Steam, overwriting saves for SteamID [{steamId}].");
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("This cannot be reversed! Please remember to backup your Steam saves!");
-
-                if (PromptYesNo("\nContinue? [Y/N] "))
+                // Ask whether to migrate automatically
+                if (PromptYesNo("\nPerform Automatic Migration to Steam? [Y/N] "))
                 {
-                    try
+                    var steamUserDir = SelectSteamUserDirectory(baseAppData);
+                    if (steamUserDir is null)
                     {
-                        var copied = CopyOutputToSteam(working, steamUserDir, overwrite: true);
-                        Console.ForegroundColor = ConsoleColor.Green;
-                        Console.WriteLine("\nMigration complete.");
                         Console.ForegroundColor = ConsoleColor.White;
-                        Console.WriteLine($"{copied} file(s) copied to: {steamUserDir}");
-                        // Clean up the temporary output folder after successful auto migration
-                        DeleteDirectory(working);
+                        Console.WriteLine("Cancelled. Opening folders instead.\n");
+                        OpenPostConversionFolders(baseAppData, working);
+                        Pause();
+                        return 0;
                     }
-                    catch (Exception ex)
+
+                    var steamId = new DirectoryInfo(steamUserDir).Name;
+
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("\nWARNING: ");
+                    Console.ForegroundColor = ConsoleColor.White;
+                    Console.WriteLine($"About to migrate Hogwarts Legacy Save Files from GamePass to Steam, overwriting saves for SteamID [{steamId}].");
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("This cannot be reversed! Please remember to backup your Steam saves!");
+
+                    if (PromptYesNo("\nContinue? [Y/N] "))
                     {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine($"Migration failed: {ex.Message}");
+                        try
+                        {
+                            var copied = CopyOutputToSteam(working, steamUserDir, overwrite: true);
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("\nMigration complete.");
+                            Console.ForegroundColor = ConsoleColor.White;
+                            Console.WriteLine($"{copied} file(s) copied to: {steamUserDir}");
+                            DeleteDirectory(working);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"Migration failed: {ex.Message}");
+                            Console.ForegroundColor = ConsoleColor.White;
+                            Console.WriteLine("Opening folders for manual copy...");
+                            OpenPostConversionFolders(baseAppData, working);
+                        }
+                    }
+                    else
+                    {
                         Console.ForegroundColor = ConsoleColor.White;
-                        Console.WriteLine("Opening folders for manual copy...");
+                        Console.WriteLine("Migration aborted by user. Opening folders for manual copy...");
                         OpenPostConversionFolders(baseAppData, working);
                     }
                 }
                 else
                 {
-                    Console.ForegroundColor = ConsoleColor.White;
-                    Console.WriteLine("Migration aborted by user. Opening folders for manual copy...");
                     OpenPostConversionFolders(baseAppData, working);
                 }
             }
             else
             {
-                OpenPostConversionFolders(baseAppData, working);
+                // Steam -> GamePass assistance
+                if (PromptYesNo("\nPerform Automatic Migration to GamePass? [Y/N] "))
+                {
+                    var wgsDir = SelectWgsUserDirectory(defaultWgsRoot);
+                    if (wgsDir is null)
+                    {
+                        Console.ForegroundColor = ConsoleColor.White;
+                        Console.WriteLine("Cancelled.\n");
+                        Pause();
+                        return 0;
+                    }
+
+                    var wgsId = new DirectoryInfo(wgsDir).Name;
+
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("\nWARNING: ");
+                    Console.ForegroundColor = ConsoleColor.White;
+                    Console.WriteLine($"About to migrate Hogwarts Legacy Save Files from Steam to GamePass, overwriting saves for GamePassID [{wgsId}].");
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("This cannot be reversed! Please remember to backup your GamePass saves!");
+
+                    if (PromptYesNo("\nContinue? [Y/N] "))
+                    {
+                        try
+                        {
+                            var copied = CopyOutputToWgs(path, wgsDir, overwrite: true);
+                            Console.ForegroundColor = ConsoleColor.Green;
+                            Console.WriteLine("\nMigration complete.");
+                            Console.ForegroundColor = ConsoleColor.White;
+                            Console.WriteLine($"{copied} file(s) copied to: {wgsDir}");
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"Migration failed: {ex.Message}");
+                            Console.ForegroundColor = ConsoleColor.White;
+                        }
+                    }
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.White;
+                        Console.WriteLine("Migration aborted by user.");
+                    }
+                }
             }
 
             Pause();
@@ -167,6 +227,66 @@ internal static class Program
         }
     }
 
+    // ---------- Args / Direction ----------
+    // Supports: -d gp2steam | steam2gp  or  --direction=gp2steam | steam2gp
+    private static Direction? ParseDirectionArg(string[] args)
+    {
+        for (var i = 0; i < args.Length; i++)
+        {
+            var a = args[i];
+            if (a.Equals("-d", StringComparison.OrdinalIgnoreCase) ||
+                a.Equals("--direction", StringComparison.OrdinalIgnoreCase))
+            {
+                if (i + 1 < args.Length)
+                    return ParseDirectionToken(args[i + 1]);
+            }
+            else if (a.StartsWith("-d=", StringComparison.OrdinalIgnoreCase))
+            {
+                return ParseDirectionToken(a[3..]);
+            }
+            else if (a.StartsWith("--direction=", StringComparison.OrdinalIgnoreCase))
+            {
+                return ParseDirectionToken(a[12..]);
+            }
+        }
+        return null;
+    }
+
+    private static Direction? ParseDirectionToken(string? token)
+    {
+        if (string.IsNullOrWhiteSpace(token)) return null;
+        token = token.Trim().ToLowerInvariant();
+        return token switch
+        {
+            "gp2steam" or "gptosteam" or "gp-steam" => Direction.GpToSteam,
+            "steam2gp" or "steamtogp" or "steam-gp" => Direction.SteamToGp,
+            _ => null
+        };
+    }
+
+    private static Direction PromptDirection()
+    {
+        Console.ForegroundColor = ConsoleColor.White;
+        Console.WriteLine("Select conversion direction:\n");
+        Console.WriteLine("  1. GamePass (WGS) → Steam");
+        Console.WriteLine("  2. Steam → GamePass (WGS) [manual WGS writeback]\n");
+        Console.ForegroundColor = ConsoleColor.Yellow;
+        Console.Write("Enter 1 or 2: ");
+        Console.ForegroundColor = ConsoleColor.White;
+
+        while (true)
+        {
+            var input = Console.ReadLine()?.Trim();
+            if (input is "1") return Direction.GpToSteam;
+            if (input is "2") return Direction.SteamToGp;
+
+            Console.ForegroundColor = ConsoleColor.Yellow;
+            Console.Write("Please enter 1 or 2: ");
+            Console.ForegroundColor = ConsoleColor.White;
+        }
+    }
+
+    // ---------- Existing path arg ----------
     private static string? ParsePathArg(string[] args)
     {
         // Supports: -p <path>, --path <path>, -p=<path>, --path=<path>
@@ -190,6 +310,17 @@ internal static class Program
         return null;
     }
 
+    // ---------- Source selection helpers (direction-aware) ----------
+    private static string? SelectSteamSourceDirectory(string baseAppData)
+    {
+        var saveRoot = Path.Combine(baseAppData, "Hogwarts Legacy", "Saved", "SaveGames");
+        if (!Directory.Exists(saveRoot))
+            return null;
+
+        // Reuse Steam destination selector to pick a source SteamID directory
+        return SelectSteamUserDirectory(baseAppData);
+    }
+
     private static string? SelectWgsUserDirectory(string wgsRoot)
     {
         if (!Directory.Exists(wgsRoot))
@@ -211,7 +342,7 @@ internal static class Program
 
             default:
                 Console.ForegroundColor = ConsoleColor.White;
-                Console.WriteLine("\nFound Game Pass (WGS) user save folders:\n");
+                Console.WriteLine("\nFound GamePass (WGS) user save folders:\n");
                 for (var i = 0; i < candidates.Count; i++)
                     Console.WriteLine($"  {i + 1}.  {candidates[i].Name}");
 
@@ -243,6 +374,22 @@ internal static class Program
         }
     }
 
+    private static IEnumerable<DirectoryInfo> EnumerateSteamUserFolders(string wgsRoot)
+    {
+        foreach (var d in Directory.EnumerateDirectories(wgsRoot))
+        {
+            var di = new DirectoryInfo(d);
+            var hasContent = false;
+            try
+            {
+                hasContent = Directory.EnumerateFileSystemEntries(di.FullName).Any();
+            }
+            catch { /* ignore IO errors */ }
+
+            if (hasContent)
+                yield return di;
+        }
+    }
     private static IEnumerable<DirectoryInfo> EnumerateWgsUserFolders(string wgsRoot)
     {
         foreach (var d in Directory.EnumerateDirectories(wgsRoot))
@@ -262,8 +409,51 @@ internal static class Program
                 yield return di;
         }
     }
+    private static string? ResolveSteamSaveDir(string inputPath)
+    {
+        // If the folder itself contains save-looking files, use it directly.
+        try
+        {
+            if (Directory.EnumerateFiles(inputPath, "*.sav", SearchOption.TopDirectoryOnly).Any())
+                return inputPath;
+        }
+        catch { /* ignore */ }
 
-    private static string? ResolveSaveDir(string inputPath)
+        // Otherwise, see if it looks like a Steam root with subfolders / choose one.
+        try
+        {
+            var subs = EnumerateSteamUserFolders(inputPath).ToList();
+            if (subs.Count == 1) return subs[0].FullName;
+            if (subs.Count > 1)
+            {
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine($"\nMultiple candidate folders inside: {inputPath}\n");
+                for (var i = 0; i < subs.Count; i++)
+                    Console.WriteLine($"  {i + 1}.  {subs[i].Name}");
+
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.Write("\nSelect one to use: [1, 2, .. / C to cancel] ");
+                Console.ForegroundColor = ConsoleColor.White;
+
+                while (true)
+                {
+                    var choice = Console.ReadLine()?.Trim();
+                    if (string.Equals(choice, "C", StringComparison.OrdinalIgnoreCase))
+                        return null;
+                    if (int.TryParse(choice, out var idx) && idx >= 1 && idx <= subs.Count)
+                        return subs[idx - 1].FullName;
+
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("Invalid selection. Enter a valid number or C: ");
+                    Console.ForegroundColor = ConsoleColor.White;
+                }
+            }
+        }
+        catch { /* ignore */ }
+
+        return null;
+    }
+    private static string? ResolveWgsSaveDir(string inputPath)
     {
         // If the folder itself contains save-looking files, use it directly.
         try
@@ -422,6 +612,94 @@ internal static class Program
         }
         return copied;
     }
+    private static Dictionary<string, string> BuildWgsSaveMap(string wgsUserDir)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        // Enumerate only likely payload files: 32-hex, no extension
+        IEnumerable<string> candidates;
+        try
+        {
+            candidates = Directory.EnumerateFiles(wgsUserDir, "*", SearchOption.AllDirectories);
+        }
+        catch
+        {
+            candidates = Array.Empty<string>();
+        }
+
+        foreach (var path in candidates)
+        {
+            byte[] bytes;
+            try { bytes = File.ReadAllBytes(path); } catch { continue; }
+
+            // Saved options
+            if (ContainsBytes(bytes, "/Script/Phoenix.SavedSettingsData"u8.ToArray()))
+            {
+                map["SavedUserOptions.sav"] = path;
+                continue;
+            }
+
+            // Game data payloads only
+            if (!ContainsBytes(bytes, "/Script/PersistentData.PersistentGameData"u8.ToArray()))
+                continue;
+
+            // Identify slot vs list by counting HL-xx markers (reuse your Pattern)
+            string text;
+            try { text = Encoding.UTF8.GetString(bytes); } catch { continue; }
+
+            var matches = Pattern.Matches(text);
+            if (matches.Count == 1)
+            {
+                // Single slot payload: HL-00-xx
+                var key = matches[0].Value + ".sav";
+                map[key] = path;
+            }
+            else if (matches.Count > 1)
+            {
+                // Aggregated list payload
+                map["SaveGameList.sav"] = path;
+            }
+        }
+
+        return map;
+    }
+    private static int CopyOutputToWgs(string srcDir, string wgsUserDir, bool overwrite)
+    {
+        if (!Directory.Exists(srcDir))
+            throw new DirectoryNotFoundException($"Output folder not found: {srcDir}");
+
+        if (!Directory.Exists(wgsUserDir))
+            throw new DirectoryNotFoundException($"WGS user folder not found: {wgsUserDir}");
+
+        var targetMap = BuildWgsSaveMap(wgsUserDir);
+
+        var copied = 0;
+        foreach (var file in Directory.EnumerateFiles(srcDir))
+        {
+            var name = Path.GetFileName(file);
+            // ReSharper disable StringLiteralTypo
+            if (name == "steam_autocloud.vdf")
+            // ReSharper restore StringLiteralTypo
+                continue;
+
+            if (!targetMap.TryGetValue(name, out var destPath))
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"No existing WGS payload for {name}; create this slot in-game once, then retry.");
+                Console.ForegroundColor = ConsoleColor.White;
+                continue;
+            }
+
+            Console.ForegroundColor = ConsoleColor.DarkGray;
+            Console.WriteLine($"Writing file: {Path.GetFileName(file)} -> {Path.GetFileName(Path.GetDirectoryName(destPath))}/{Path.GetFileName(destPath)}");
+            Console.ForegroundColor = ConsoleColor.White;
+            File.Copy(file, destPath, overwrite);
+            copied++;
+        }
+
+        return copied;
+    }
+
 
     private static void Pause()
     {
